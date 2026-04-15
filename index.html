@@ -165,6 +165,8 @@
           const lv = LEVEL_META[issue.level] ?? LEVEL_META.L3;
           body += wpShaded({ text: `${idx + 1}. 【${lv.label}】${issue.title}`, bold: true, size: 24, fill: lv.fill, color: lv.accent, spaceAfter: 40 });
           body += wpShaded({ text: `类型：${issue.type}　　位置：${issue.location}`, size: 20, fill: lv.fill, color: lv.color, spaceAfter: 40 });
+          if (issue.excerpt)
+            body += wpShaded({ text: `原文摘录："${issue.excerpt}"`, size: 20, fill: 'EEF2FF', color: '4338CA', spaceAfter: 40 });
           body += wpShaded({ text: `说明：${issue.desc}`, size: 22, fill: lv.fill, color: lv.color, spaceAfter: 40 });
           body += wpShaded({ text: `建议：${issue.suggestion}`, size: 22, fill: 'F8FAFC', color: '1E293B', spaceAfter: 40 });
           body += wpShaded({ text: `依据：${issue.source}`, size: 20, fill: 'F8FAFC', color: '64748B', spaceAfter: 140 });
@@ -245,6 +247,7 @@
               </div>
               <div style="padding:10px 14px;background:#fff">
                 <p style="margin:0 0 4px;font-size:11px;color:#64748b">位置：${issue.location}</p>
+                ${issue.excerpt ? `<div style="margin:0 0 8px;background:#ede9fe;border-radius:5px;padding:5px 10px;border-left:3px solid #7c3aed"><span style="font-size:9px;font-weight:bold;color:#7c3aed;display:block;margin-bottom:2px">原文摘录</span><p style="margin:0;font-size:11px;color:#4c1d95;font-family:monospace">"${issue.excerpt}"</p></div>` : ''}
                 <p style="margin:0 0 8px;font-size:12px;color:#334155">${issue.desc}</p>
                 <div style="background:#f8fafc;border-radius:6px;padding:8px 12px;border:1px solid #e2e8f0">
                   <div style="font-size:10px;font-weight:bold;color:#94a3b8;margin-bottom:3px">修改建议</div>
@@ -579,8 +582,8 @@
     const runChecks = (text, xmlData, rules) => {
       const issues = [];
       let uid = 1;
-      const push = (level, location, type, title, desc, suggestion, source) =>
-        issues.push({ id: uid++, level, location, type, title, desc, suggestion, source });
+      const push = (level, location, type, title, desc, suggestion, source, excerpt = '') =>
+        issues.push({ id: uid++, level, location, type, title, desc, suggestion, source, excerpt });
       const rv = (id) => rules.find(r => r.id === id)?.value ?? '';
       const rsrc = (id) => rules.find(r => r.id === id)?.source ?? '规范要求';
 
@@ -619,19 +622,23 @@
           const firstGhostStr = `[${ghost[0]}]`;
           const firstGhostPos = text.indexOf(firstGhostStr);
           const ghostPage = firstGhostPos >= 0 ? chapLoc(estimatePage(text, firstGhostPos)) : '文末参考文献列表';
+          const ghostExcerpt = firstGhostPos >= 0 ? textExcerpt(text, firstGhostPos, 40) : '';
           push('L1', ghostPage, '引用完整性',
             `幽灵引用（${ghost.length} 条）`,
             `正文引用了 [${ghost.join(', ')}]，但参考文献列表中未找到对应条目`,
             `请在文末参考文献列表中补充条目：[${ghost.join('], [')}]`,
-            '系统双向校验引擎');
+            '系统双向校验引擎', ghostExcerpt);
         }
         const orphan = [...refEntries].filter(n => !inlineCits.has(n)).sort((a,b) => a-b);
-        if (orphan.length > 0 && orphan.length <= 15)
+        if (orphan.length > 0 && orphan.length <= 15) {
+          const firstOrphanPos = text.indexOf(`[${orphan[0]}]`);
+          const orphanExcerpt = firstOrphanPos >= 0 ? textExcerpt(text, firstOrphanPos, 40) : '';
           push('L2', '文末参考文献列表', '引用完整性',
             `孤立条目（${orphan.length} 条）`,
             `参考文献列表中的 [${orphan.join(', ')}] 在正文中未检测到对应引用`,
             `请确认是否应引用这些条目，或将其从列表中删除`,
-            '系统双向校验引擎');
+            '系统双向校验引擎', orphanExcerpt);
+        }
       }
 
       // ── C. 中英文标点混用（精准模式，逐条定位）─────────────────────────
@@ -673,7 +680,8 @@
           `英文半角"${hit.wrongPunct}"用于中文语境`,
           `原文：${hit.excerpt}`,
           `请将此处的英文"${hit.wrongPunct}"改为中文全角"${hit.rightPunct}"`,
-          '默认基线（中文标点规范）');
+          '默认基线（中文标点规范）',
+          hit.excerpt);
       });
       if (punctHits.length > PUNCT_SHOW) {
         const extra = punctHits.length - PUNCT_SHOW;
@@ -689,15 +697,41 @@
       // ── D. 参考文献格式 ──────────────────────────────────────────────────
       const refFmt = rv('ref-format');
       if (refFmt === 'GB/T 7714' && refEntries.size >= 3) {
-        if (!/\[\d+\].+?[\[（(][JMCDRSPNG][\]）)]/.test(text))
+        if (!/\[\d+\].+?[\[（(][JMCDRSPNG][\]）)]/.test(text)) {
+          const firstRefM = text.match(/^\s*\[(\d+)\]\s*.{5,80}/m);
+          const refEx = firstRefM ? firstRefM[0].trim().slice(0, 70) + (firstRefM[0].trim().length > 70 ? '…' : '') : '';
           push('L2', '参考文献列表', '参考文献',
             '未检测到 GB/T 7714 文献类型标识',
             '规范要求使用 GB/T 7714 格式，但未发现 [J]、[M]、[C]、[D] 等文献类型标识符',
             '请为每条参考文献补充文献类型标识，如期刊加 [J]，专著加 [M]，学位论文加 [D]',
-            rsrc('ref-format'));
+            rsrc('ref-format'), refEx);
+        }
       }
 
       // ── E. DOCX 格式参数校验 ─────────────────────────────────────────────
+      // 预先从 document.xml 提取正文段落和一级标题的示例文字，用于报告摘录
+      let _bodyExcerpt = '', _headingExcerpt = '';
+      if (xmlData?.documentXml) {
+        try {
+          const _WNS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+          const _dom = new DOMParser().parseFromString(xmlData.documentXml, 'application/xml');
+          const _gw  = (el, n) => el?.getAttributeNS(_WNS, n) ?? el?.getAttribute('w:' + n) ?? '';
+          for (const p of _dom.getElementsByTagNameNS(_WNS, 'p')) {
+            const pPr  = p.getElementsByTagNameNS(_WNS, 'pPr')[0];
+            const pSt  = pPr?.getElementsByTagNameNS(_WNS, 'pStyle')[0];
+            const sid  = _gw(pSt, 'val').toLowerCase();
+            let ptxt = ''; for (const t of p.getElementsByTagNameNS(_WNS, 't')) ptxt += t.textContent;
+            ptxt = ptxt.trim();
+            if (!_bodyExcerpt && /(normal|正文|^$)/.test(sid) && ptxt.length > 20 &&
+                !/^(摘要|Abstract|关键词|Keywords|参考文献|目录)/.test(ptxt))
+              _bodyExcerpt = ptxt.slice(0, 65) + (ptxt.length > 65 ? '…' : '');
+            if (!_headingExcerpt && /(heading.*1|标题.*1|h1)/.test(sid) && ptxt.length > 2)
+              _headingExcerpt = ptxt.slice(0, 65) + (ptxt.length > 65 ? '…' : '');
+            if (_bodyExcerpt && _headingExcerpt) break;
+          }
+        } catch {}
+      }
+
       if (xmlData?.stylesXml) {
         const styles = parseDocxStyles(xmlData.stylesXml);
 
@@ -707,7 +741,7 @@
         if (bodyFont && expBF && !isSameFont(bodyFont, expBF))
           push('L1', '正文样式（Normal）', '字体排版', '正文字体不符合规范',
             `检测到正文字体为"${bodyFont}"，规范要求"${expBF}"`,
-            `请在 Word 中修改"正文"样式的中文字体为"${expBF}"`, rsrc('font-main'));
+            `请在 Word 中修改"正文"样式的中文字体为"${expBF}"`, rsrc('font-main'), _bodyExcerpt);
 
         // 正文字号
         const bodySize = getStyleProp(styles, 'size', 'Normal', 'normal', '正文', '__default__');
@@ -716,7 +750,7 @@
         if (bodySize && expBS && Math.abs(bodySize - expBS) > 0.5)
           push('L1', '正文样式（Normal）', '字体排版', '正文字号不符合规范',
             `检测到正文字号为 ${bodySize}pt，规范要求 ${expBSStr}（${expBS}pt）`,
-            `请在 Word 中将"正文"样式字号修改为 ${expBSStr}`, rsrc('size-main'));
+            `请在 Word 中将"正文"样式字号修改为 ${expBSStr}`, rsrc('size-main'), _bodyExcerpt);
 
         // 一级标题字体
         const h1Font = getStyleProp(styles, 'font', 'Heading1', 'heading1', '1', 'Heading 1', '标题1', '标题 1');
@@ -724,7 +758,7 @@
         if (h1Font && expH1F && !isSameFont(h1Font, expH1F))
           push('L1', '一级标题样式（Heading 1）', '字体排版', '章标题字体不符合规范',
             `检测到一级标题字体为"${h1Font}"，规范要求"${expH1F}"`,
-            `请在 Word 中修改"标题 1"样式的中文字体为"${expH1F}"`, rsrc('font-title'));
+            `请在 Word 中修改"标题 1"样式的中文字体为"${expH1F}"`, rsrc('font-title'), _headingExcerpt);
 
         // 一级标题字号
         const h1Size = getStyleProp(styles, 'size', 'Heading1', 'heading1', '1', 'Heading 1', '标题1', '标题 1');
@@ -733,7 +767,7 @@
         if (h1Size && expH1S && Math.abs(h1Size - expH1S) > 0.5)
           push('L2', '一级标题样式（Heading 1）', '字体排版', '章标题字号不符合规范',
             `检测到一级标题字号为 ${h1Size}pt，规范要求 ${expH1SStr}（${expH1S}pt）`,
-            `请在 Word 中将"标题 1"样式字号修改为 ${expH1SStr}`, rsrc('size-title1'));
+            `请在 Word 中将"标题 1"样式字号修改为 ${expH1SStr}`, rsrc('size-title1'), _headingExcerpt);
 
         // 行距
         const lineSpacing = getStyleProp(styles, 'lineSpacing', 'Normal', 'normal', '正文');
@@ -745,7 +779,7 @@
           if (Math.abs(detected - expSp) > 0.15)
             push('L2', '正文样式（Normal）', '字体排版', '正文行距不符合规范',
               `检测到正文行距约 ${detected.toFixed(2)} 倍，规范要求 ${expSpStr} 倍`,
-              `请在 Word 段落格式中将行距设为"多倍行距 ${expSp}"`, rsrc('line-spacing'));
+              `请在 Word 段落格式中将行距设为"多倍行距 ${expSp}"`, rsrc('line-spacing'), _bodyExcerpt);
         }
       } else if (text.length > 0) {
         push('L3', '全文', '字体排版', 'PDF / .doc 格式无法自动检测排版参数',
@@ -810,11 +844,12 @@
 
         // 混用检测
         const detected = [chineseSN > 0 ? '中文序号（第X章）' : null, numericSN > 0 ? '数字序号（1.）' : null, englishSN > 0 ? '英文序号（Chapter X）' : null].filter(Boolean);
+        const chapSample = h1Titles.slice(0, 4).join(' / ');
         if (detected.length > 1)
           push('L2', `一级标题（共 ${total} 章）`, '论文结构', '一级标题编号格式不统一',
             `检测到标题编号混用多种格式：${detected.join('、')}`,
             '请统一使用同一种章节编号格式（建议采用"第X章"或"数字+点"格式之一贯穿全文）',
-            '通用学术规范');
+            '通用学术规范', chapSample);
         else if (total >= 3) {
           // 检查章节是否有标题编号（无编号风险）
           const noSN = h1Titles.filter(t => !/^(第|Chapter|\d)/.test(t.trim())).length;
@@ -822,7 +857,7 @@
             push('L3', `一级标题（共 ${total} 章）`, '论文结构', '一级标题可能缺少编号',
               `${noSN} 个一级标题未检测到标准章节编号（如"第X章"或"1."），请确认是否符合规范要求`,
               '若规范要求章节编号，请为每个一级标题添加统一的编号格式',
-              '通用学术规范');
+              '通用学术规范', chapSample);
         }
       }
 
@@ -833,7 +868,7 @@
           const docDom = new DOMParser().parseFromString(xmlData.documentXml, 'application/xml');
           const gw = (el, name) => el?.getAttributeNS(WNS, name) ?? el?.getAttribute('w:' + name) ?? null;
           const paras = docDom.getElementsByTagNameNS(WNS, 'p');
-          let normalCount = 0, noIndentCount = 0;
+          let normalCount = 0, noIndentCount = 0, firstBadIndent = '';
 
           for (const p of paras) {
             const pPr = p.getElementsByTagNameNS(WNS, 'pPr')[0];
@@ -850,14 +885,17 @@
             normalCount++;
             const ind = pPr?.getElementsByTagNameNS(WNS, 'ind')[0];
             const firstLine = parseInt(gw(ind, 'firstLine') ?? '0');
-            if (firstLine < 380) noIndentCount++; // 380 twips ≈ 1.9 字符（阈值取 2 字符的 80%）
+            if (firstLine < 380) {
+              noIndentCount++;
+              if (!firstBadIndent) firstBadIndent = txt.slice(0, 65) + (txt.length > 65 ? '…' : '');
+            }
           }
 
           if (normalCount >= 5 && noIndentCount / normalCount > 0.25) {
             push('L2', `正文段落（约 ${noIndentCount}/${normalCount} 个未缩进）`, '字体排版', '正文段落首行缩进不足',
               `检测到约 ${Math.round(noIndentCount / normalCount * 100)}% 的正文段落首行缩进不足（中文规范要求 2 字符 ≈ 480 twips，检测阈值 380 twips）`,
               '在 Word 中选中全部正文内容→段落格式→缩进→首行缩进→2字符（或约0.74cm），并通过"正文"样式统一设置',
-              '默认基线（中文学术规范）');
+              '默认基线（中文学术规范）', firstBadIndent);
           }
         } catch { /* 解析失败则跳过此检测 */ }
       }
@@ -925,7 +963,11 @@
             onClick=${() => inputRef.current?.click()}
             onDragOver=${(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragEnter=${(e) => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave=${(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false); }}
+            onDragLeave=${(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)
+                setIsDragging(false);
+            }}
             onDrop=${handleDrop}
           >
             <div className=${`p-4 rounded-full bg-white shadow-sm mb-4 transition-transform ${isDragging ? 'scale-110' : ''}`}>
@@ -1519,7 +1561,12 @@ body { margin: 0; background: #fff; }
                                 </div>
                                 <div className="p-4 bg-white">
                                   <h4 className="font-bold text-slate-800">${issue.title}</h4>
-                                  <p className="text-sm text-slate-600 mt-1">${issue.desc}</p>
+                                  ${issue.excerpt && html`
+                                    <div className="mt-2 px-3 py-2 bg-violet-50 border-l-2 border-violet-400 rounded-r-lg">
+                                      <span className="text-[9px] font-bold text-violet-400 block mb-0.5 uppercase tracking-wider">原文摘录</span>
+                                      <p className="text-xs font-mono text-violet-800 leading-relaxed">"${issue.excerpt}"</p>
+                                    </div>`}
+                                  <p className="text-sm text-slate-600 mt-2">${issue.desc}</p>
                                   <div className="mt-3 flex flex-col md:flex-row gap-3 items-start md:items-center">
                                     <div className="flex-1 bg-slate-50 p-3 rounded-lg border border-slate-100">
                                       <span className="text-[10px] font-bold text-slate-400 block mb-1">修改建议</span>
