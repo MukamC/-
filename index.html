@@ -1202,6 +1202,106 @@ body { margin: 0; background: #fff; }
         }
       };
 
+      // ── 下载标注版 PDF（纯前端，pdf-lib 注入批注图标）──────────────────
+      const exportAnnotatedPDF = async () => {
+        if (!thesisRawFile) return;
+        setAnnotating(true);
+        try {
+          // 按需动态加载 pdf-lib
+          if (!window.PDFLib) {
+            await new Promise((res, rej) => {
+              const s = document.createElement('script');
+              s.src = 'https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+              s.onload = res;
+              s.onerror = () => rej(new Error('pdf-lib 加载失败，请检查网络连接'));
+              document.head.appendChild(s);
+            });
+          }
+          const { PDFDocument, PDFName, PDFHexString } = window.PDFLib;
+
+          // UTF-16BE 编码 → PDF 批注正确显示中文
+          const pdfStr = (str) => {
+            const b = [0xFE, 0xFF];
+            for (let i = 0; i < str.length; i++) {
+              const c = str.charCodeAt(i);
+              b.push((c >> 8) & 0xFF, c & 0xFF);
+            }
+            return PDFHexString.of(b.map(x => x.toString(16).padStart(2,'0')).join('').toUpperCase());
+          };
+
+          const raw    = await thesisRawFile.arrayBuffer();
+          const pdfDoc = await PDFDocument.load(raw, { ignoreEncryption: true });
+          const pages  = pdfDoc.getPages();
+          const nPages = pages.length;
+
+          // ── 将错误按页码归组（无页码的归第 1 页或末页）──────────────
+          const pageMap = new Map();
+          for (const issue of checkResults.issues) {
+            let pg = 1;
+            const m = issue.location.match(/第\s*(\d+)\s*页/);
+            if (m) {
+              pg = Math.max(1, Math.min(parseInt(m[1]), nPages));
+            } else if (/参考文献/.test(issue.location)) {
+              pg = nPages;
+            }
+            // 其余文档整体性问题（字体、行距等）归第 1 页
+            if (!pageMap.has(pg)) pageMap.set(pg, []);
+            pageMap.get(pg).push(issue);
+          }
+
+          // ── 在每页右侧边距插入 PDF Text（便利贴）批注 ───────────────
+          const LEVEL_RGB = { L1:[1,0.18,0.18], L2:[1,0.60,0], L3:[0.16,0.51,1] };
+          for (const [pgNum, errors] of pageMap) {
+            const page   = pages[pgNum - 1];
+            const { width, height } = page.getSize();
+
+            const annotRefs = errors.map((issue, i) => {
+              const c    = LEVEL_RGB[issue.level] ?? [0.5,0.5,0.5];
+              const body = [
+                `[${issue.level}] ${issue.title}`,
+                `类型：${issue.type}　位置：${issue.location}`,
+                issue.excerpt ? `原文：${issue.excerpt}` : null,
+                ``,
+                `说明：${issue.desc}`,
+                `建议：${issue.suggestion}`,
+                `依据：${issue.source}`,
+              ].filter(l => l !== null).join('\n');
+
+              // 图标叠放在右侧页边距，从上往下排列
+              const x = width - 22;
+              const y = height - 48 - i * 28;
+
+              const annot = pdfDoc.context.obj({
+                Type:     PDFName.of('Annot'),
+                Subtype:  PDFName.of('Text'),
+                Open:     false,
+                Name:     PDFName.of('Comment'),
+                Rect:     pdfDoc.context.obj([x-12, y-12, x+12, y+12]),
+                Contents: pdfStr(body),
+                T:        pdfStr('格式校验'),
+                C:        pdfDoc.context.obj(c),
+                Flags:    pdfDoc.context.obj(4),
+              });
+              return pdfDoc.context.register(annot);
+            });
+
+            page.node.set(PDFName.of('Annots'), pdfDoc.context.obj(annotRefs));
+          }
+
+          const out  = await pdfDoc.save();
+          const blob = new Blob([out], { type: 'application/pdf' });
+          const url  = URL.createObjectURL(blob);
+          const a    = document.createElement('a');
+          a.href = url; a.download = `标注版_${thesisFileName}`; a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        } catch (err) {
+          alert(`PDF 标注失败：${err.message}`);
+        } finally {
+          setAnnotating(false);
+        }
+      };
+
       const canStartCheck = thesisFileName && !thesisIsParsing && !thesisError;
 
       return html`
@@ -1509,8 +1609,11 @@ body { margin: 0; background: #fff; }
                         <button onClick=${exportWord} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition-colors">
                           <${FileText} size=${16} /> 导出带批注 Word
                         </button>
-                        ${thesisFileName.endsWith('.docx') && thesisRawFile && html`
-                          <button onClick=${exportAnnotated} disabled=${annotating}
+                        ${thesisRawFile && (thesisFileName.endsWith('.docx') || thesisFileName.toLowerCase().endsWith('.pdf')) && html`
+                          <button
+                            onClick=${thesisFileName.toLowerCase().endsWith('.pdf') ? exportAnnotatedPDF : exportAnnotated}
+                            disabled=${annotating}
+                            title=${thesisFileName.toLowerCase().endsWith('.pdf') ? 'PDF 批注（浏览器端，无需后端）' : 'DOCX 批注（需要 python server.py 运行）'}
                             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
                             ${annotating
                               ? html`<div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0"></div><span>标注中…</span>`
