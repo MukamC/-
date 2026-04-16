@@ -910,13 +910,20 @@
     // ─── 步骤指示器 ──────────────────────────────────────────────────────
     const STEPS = ['上传规范', '确认规则', '上传论文', '校验中', '校验报告'];
 
-    const StepIndicator = ({ currentStep }) => html`
+    const StepIndicator = ({ currentStep, onStepClick }) => html`
       <div className="flex items-center justify-between mb-8 px-1">
-        ${STEPS.map((s, i) => html`
+        ${STEPS.map((s, i) => {
+          // 步骤 3（校验中）是自动触发的过渡步骤，不允许直接跳转
+          const clickable = i < currentStep && i !== 3;
+          return html`
           <${Fragment} key=${i}>
-            <div className="flex flex-col items-center">
+            <div
+              className=${`flex flex-col items-center ${clickable ? 'cursor-pointer group' : ''}`}
+              onClick=${clickable ? () => onStepClick(i) : undefined}
+              title=${clickable ? `返回：${s}` : undefined}
+            >
               <div className=${`w-9 h-9 rounded-full flex items-center justify-center border-2 transition-colors ${
-                currentStep > i   ? 'bg-indigo-600 border-indigo-600 text-white' :
+                currentStep > i   ? `bg-indigo-600 border-indigo-600 text-white ${clickable ? 'group-hover:bg-indigo-500 group-hover:border-indigo-500' : ''}` :
                 currentStep === i ? 'border-indigo-600 text-indigo-600 bg-white' :
                                     'border-slate-300 text-slate-400 bg-white'
               }`}>
@@ -924,8 +931,10 @@
                   ? html`<${CheckCircle2} size=${17} />`
                   : html`<span className="text-xs font-semibold">${i + 1}</span>`}
               </div>
-              <span className=${`text-[11px] mt-1.5 font-medium whitespace-nowrap ${
-                currentStep === i ? 'text-indigo-600' : 'text-slate-400'
+              <span className=${`text-[11px] mt-1.5 font-medium whitespace-nowrap transition-colors ${
+                currentStep === i ? 'text-indigo-600' :
+                clickable         ? 'text-indigo-400 group-hover:text-indigo-600' :
+                                    'text-slate-400'
               }`}>${s}</span>
             </div>
             ${i < STEPS.length - 1 && html`
@@ -934,7 +943,7 @@
               }`} />
             `}
           <//>
-        `)}
+        `})}
       </div>
     `;
 
@@ -1025,6 +1034,8 @@
 
       const nextStep = () => setStep(s => s + 1);
       const prevStep = () => setStep(s => s - 1);
+      // 点击步骤条回退：只跳转步骤，不清除任何已有数据
+      const goToStep = (i) => setStep(i);
 
       // ── 规范文件处理 ──────────────────────────────────────────────────
       const [specOcrStatus, setSpecOcrStatus] = useState('');
@@ -1220,15 +1231,16 @@ body { margin: 0; background: #fff; }
           const { PDFDocument, PDFName, PDFHexString } = window.PDFLib;
 
           // UTF-16BE → PDF hex string（中文批注）
-          // PDFHexString.of(s) 把 s 每个字符的 charCode 转成两位 hex，
-          // 所以必须把每个字节值作为单字符传入，不能先转成 hex 字符串再传。
+          // PDFHexString.of(value) 直接把 value 原样存储并包裹为 <value>，
+          // 所以必须传入十六进制字符串（如 "feff683c..."），而非二进制字节串。
           const pdfStr = (str) => {
-            let s = String.fromCharCode(0xFE, 0xFF); // BOM
+            let hex = 'feff'; // BOM（UTF-16BE 标记，PDF 规范识别为 Unicode 文本）
             for (let i = 0; i < str.length; i++) {
               const c = str.charCodeAt(i);
-              s += String.fromCharCode((c >>> 8) & 0xFF, c & 0xFF);
+              hex += ((c >>> 8) & 0xFF).toString(16).padStart(2, '0');
+              hex += (c & 0xFF).toString(16).padStart(2, '0');
             }
-            return PDFHexString.of(s);
+            return PDFHexString.of(hex);
           };
 
           const raw    = await thesisRawFile.arrayBuffer();
@@ -1330,7 +1342,7 @@ body { margin: 0; background: #fff; }
 
             <main className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200 overflow-hidden">
               <div className="p-8">
-                <${StepIndicator} currentStep=${step} />
+                <${StepIndicator} currentStep=${step} onStepClick=${goToStep} />
 
                 <!-- ═══ Step 0：上传规范文件 ═══ -->
                 ${step === 0 && html`
